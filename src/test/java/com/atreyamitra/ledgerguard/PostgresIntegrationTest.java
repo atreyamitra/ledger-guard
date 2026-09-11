@@ -1,7 +1,7 @@
 package com.atreyamitra.ledgerguard;
 
 import com.fasterxml.jackson.databind.*;
-import jakarta.annotation.PostConstruct;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
@@ -34,12 +34,14 @@ abstract class PostgresIntegrationTest {
     @Autowired ObjectMapper mapper;
     @Autowired JdbcTemplate jdbc;
 
-    @PostConstruct
+    @BeforeEach
     void disableOutputStreaming() {
         // The JDK's HttpURLConnection cannot retry a streamed request body when the server
         // responds 401, and throws "cannot retry due to server authentication, in streaming
         // mode". WebhookHmacTest intentionally exercises 401 responses, so force the request
-        // factory to buffer the body instead of streaming it.
+        // factory to buffer the body instead of streaming it. @PostConstruct is NOT invoked on
+        // JUnit 5 test instances (Spring's DependencyInjectionTestExecutionListener only
+        // autowires fields), so this must run from a JUnit lifecycle callback instead.
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setOutputStreaming(false);
         http.getRestTemplate().setRequestFactory(factory);
