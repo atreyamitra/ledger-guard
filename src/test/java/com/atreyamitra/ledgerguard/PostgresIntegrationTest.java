@@ -1,10 +1,12 @@
 package com.atreyamitra.ledgerguard;
 
 import com.fasterxml.jackson.databind.*;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -31,6 +33,17 @@ abstract class PostgresIntegrationTest {
     @Autowired TestRestTemplate http;
     @Autowired ObjectMapper mapper;
     @Autowired JdbcTemplate jdbc;
+
+    @PostConstruct
+    void disableOutputStreaming() {
+        // The JDK's HttpURLConnection cannot retry a streamed request body when the server
+        // responds 401, and throws "cannot retry due to server authentication, in streaming
+        // mode". WebhookHmacTest intentionally exercises 401 responses, so force the request
+        // factory to buffer the body instead of streaming it.
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setOutputStreaming(false);
+        http.getRestTemplate().setRequestFactory(factory);
+    }
 
     UUID createAccount() throws Exception {
         var response = http.postForEntity("/api/accounts", Map.of("ownerName", "Asha"), String.class);
