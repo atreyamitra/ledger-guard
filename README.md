@@ -2,7 +2,17 @@
 
 A small Java 17 payment credit ledger with authenticated webhooks, persistent idempotency, atomic balance updates, and reconciliation. A portfolio engineering project with fictional data; no financial institution affiliation.
 
-**Verification status:** implementation and tests are included. The complete Maven build and PostgreSQL integration suite have **not run in the build environment** (Maven/Docker unavailable; dependency download blocked). See [VERIFICATION.md](VERIFICATION.md). No CI badge or concurrency success claim is asserted without a passing run.
+**Verification status:** the full Maven build and PostgreSQL/Testcontainers integration suite have run in GitHub Actions and passed: 23 tests, 0 failures, 0 errors ([workflow run](https://github.com/atreyamitra/ledger-guard/actions/runs/34613101102/job/103308234354)). See [VERIFICATION.md](VERIFICATION.md) for the full history, including the earlier offline-only checks and the CI fixes that got the suite green.
+
+## Clone and run
+
+```sh
+git clone https://github.com/atreyamitra/ledger-guard.git
+cd ledger-guard
+./mvnw -B test
+```
+
+CI runs the same command on a GitHub-hosted `ubuntu-latest` runner (Java 17, Docker available) via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). `src/test/java/com/atreyamitra/ledgerguard/ConcurrencyTest.java` proves the 20-concurrent-duplicate guarantee: `twentyParallelIdenticalWebhooksCreditExactlyOnce` fires 20 parallel identical signed webhooks and asserts all 200 responses are byte-identical, with exactly one ledger entry, one idempotency claim, and the balance increased exactly once.
 
 ## Why this design
 
@@ -56,13 +66,13 @@ It creates an account, sends the exact same signed payment twice, checks the res
 ./mvnw test
 ```
 
-CI runs `./mvnw -B test` on a GitHub-hosted Ubuntu runner with Java 17 and Docker. No external database configuration is needed for tests. Testcontainers starts one PostgreSQL container per test JVM and applies the real Flyway migration. Tests use real HTTP requests and independent signature generation. Missing Docker is a failure, not a skip. Classes run sequentially; concurrency is explicitly driven inside `ConcurrencyTest`. Unique accounts and keys isolate scenarios. Test-only drift is restored in a `finally` block.
+CI runs `./mvnw -B test` on a GitHub-hosted Ubuntu runner with Java 17 and Docker, and is currently green (23/23 tests passing). No external database configuration is needed for tests. Testcontainers starts one PostgreSQL container per test JVM and applies the real Flyway migration. Tests use real HTTP requests (Apache HttpClient5, configured in `PostgresIntegrationTest` — the JDK's default `HttpURLConnection`-based client throws on a POST that receives a 401 response) and independent signature generation. Missing Docker is a failure, not a skip. Classes run sequentially; concurrency is explicitly driven inside `ConcurrencyTest`. Unique accounts and keys isolate scenarios. Test-only drift is restored in a `finally` block.
 
 | Test | Contract checked |
 | --- | --- |
 | `WebhookHmacTest` | Bad/missing/malformed signatures return 401; a valid request creates one entry; raw-byte tampering and unauthenticated retries are rejected |
 | `IdempotencyTest` | Same key/body returns the exact original response; changed body returns 409; historical result survives later credits |
-| `ConcurrencyTest.twentyParallelIdenticalWebhooksCreditExactlyOnce` | **20 parallel identical signed webhooks**, all 200 with identical responses, one entry, one claim, balance increased once |
+| `ConcurrencyTest.twentyParallelIdenticalWebhooksCreditExactlyOnce` | **20 parallel identical signed webhooks**, all 200 with identical responses, one entry, one claim, balance increased once — this is the class/method that proves the 20-concurrent-duplicate guarantee |
 | Other `ConcurrencyTest` cases | Different keys do not lose credits; competing bodies under one key yield one accepted body |
 | `ReconciliationTest` | Healthy balances, test-only drift returning 409, SQL update/delete protection |
 | `ValidationTest` | Nonpositive amounts, unknown accounts, malformed input, unsupported currency, fractions, missing key, and overflow rollback |
@@ -116,7 +126,7 @@ scripts/demo.py             Signed request and replay walkthrough
 scripts/check-offline.sh    JDK-only crypto checks
 HANDOFF.md                  Current state, exact next command, complete file tree
 STATUS.md / TODO.md         Checkpoint status and outstanding work
-VERIFICATION.md             Observed checks versus unexecuted tests
+VERIFICATION.md             Observed checks versus unexecuted tests, and the CI run history
 RESUME_BULLETS.md            Claims limited to observed passing checks
 ```
 
