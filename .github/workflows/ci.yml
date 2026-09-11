@@ -16,7 +16,7 @@ jobs:
           java-version: '17'
           cache: maven
       - name: Run PostgreSQL integration and unit tests
-        run: ./mvnw -B test
+        run: chmod +x mvnw && ./mvnw -B test
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@v4
