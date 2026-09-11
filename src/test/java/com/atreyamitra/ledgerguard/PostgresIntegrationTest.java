@@ -1,12 +1,13 @@
 package com.atreyamitra.ledgerguard;
 
 import com.fasterxml.jackson.databind.*;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.http.*;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -35,16 +36,14 @@ abstract class PostgresIntegrationTest {
     @Autowired JdbcTemplate jdbc;
 
     @BeforeEach
-    void disableOutputStreaming() {
-        // The JDK's HttpURLConnection cannot retry a streamed request body when the server
-        // responds 401, and throws "cannot retry due to server authentication, in streaming
-        // mode". WebhookHmacTest intentionally exercises 401 responses, so force the request
-        // factory to buffer the body instead of streaming it. @PostConstruct is NOT invoked on
-        // JUnit 5 test instances (Spring's DependencyInjectionTestExecutionListener only
-        // autowires fields), so this must run from a JUnit lifecycle callback instead.
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setOutputStreaming(false);
-        http.getRestTemplate().setRequestFactory(factory);
+    void useApacheHttpClient() {
+        // The JDK's default SimpleClientHttpRequestFactory (HttpURLConnection) throws
+        // "cannot retry due to server authentication, in streaming mode" on a POST that
+        // gets a 401 response, even with outputStreaming disabled -- Spring's buffering
+        // request still calls setFixedLengthStreamingMode internally. WebhookHmacTest
+        // intentionally exercises 401 responses, so use Apache HttpClient5 instead, which
+        // does not have this JDK-specific bug.
+        http.getRestTemplate().setRequestFactory(new HttpComponentsClientHttpRequestFactory(HttpClients.createDefault()));
     }
 
     UUID createAccount() throws Exception {
