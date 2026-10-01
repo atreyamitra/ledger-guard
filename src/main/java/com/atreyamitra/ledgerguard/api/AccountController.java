@@ -1,7 +1,6 @@
 package com.atreyamitra.ledgerguard.api;
 
 import com.atreyamitra.ledgerguard.api.ApiModels.*;
-import com.atreyamitra.ledgerguard.domain.LedgerEntry;
 import com.atreyamitra.ledgerguard.service.AccountService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -20,5 +19,5 @@ public class AccountController {
         return ResponseEntity.created(URI.create("/api/accounts/" + result.id())).body(result);
     }
     @GetMapping("/{id}") public AccountView get(@PathVariable UUID id) { return service.get(id); }
-    @GetMapping("/{id}/entries") public List<LedgerEntry> entries(@PathVariable UUID id) { return service.entries(id); }
+    @GetMapping("/{id}/entries") public List<EntryView> entries(@PathVariable UUID id) { return service.entries(id); }
 }

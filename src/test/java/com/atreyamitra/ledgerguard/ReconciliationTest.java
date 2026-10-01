@@ -42,7 +42,4 @@ class ReconciliationTest extends PostgresIntegrationTest {
         assertThat(count(id)).isEqualTo(1);
         assertThat(reconcile().getStatusCode()).isEqualTo(HttpStatus.OK);
     }
-    private ResponseEntity<String> reconcile() {
-        return http.postForEntity("/api/admin/reconcile", null, String.class);
-    }
 }

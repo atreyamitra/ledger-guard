@@ -12,13 +12,16 @@ import java.io.IOException;
 
 @RestController
 public class WebhookController {
+    static final int MIN_SECRET_LENGTH = 16;
     private final WebhookService service;
     private final ObjectMapper mapper;
     private final Validator validator;
     private final String secret;
     public WebhookController(WebhookService service, ObjectMapper mapper, Validator validator,
                              @Value("${app.webhook.secret}") String secret) {
-        if (secret.isBlank()) throw new IllegalArgumentException("Webhook secret must not be blank");
+        if (secret.length() < MIN_SECRET_LENGTH)
+            throw new IllegalArgumentException("app.webhook.secret (WEBHOOK_SECRET) must be set to at least "
+                    + MIN_SECRET_LENGTH + " characters; there is deliberately no default");
         this.service = service; this.mapper = mapper; this.validator = validator; this.secret = secret;
     }
     @PostMapping(value = "/api/webhooks/payments", produces = MediaType.APPLICATION_JSON_VALUE)

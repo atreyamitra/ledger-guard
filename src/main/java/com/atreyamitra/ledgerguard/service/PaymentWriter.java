@@ -29,7 +29,7 @@ public class PaymentWriter {
         Account account = accounts.findLockedById(payment.accountId())
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
         account.credit(payment.amountMinor());
-        LedgerEntry entry = new LedgerEntry(account.getId(), payment.amountMinor(), payment.currency(), payment.eventId());
+        LedgerEntry entry = new LedgerEntry(account.getId(), payment.amountMinor(), payment.currency(), payment.eventId(), key);
         entityManager.persist(entry);
         try {
             String response = mapper.writeValueAsString(new PaymentResult(entry.getId(), account.getId(), payment.amountMinor(),

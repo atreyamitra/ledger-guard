@@ -16,20 +16,30 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 abstract class PostgresIntegrationTest {
-    // One container for the JVM: avoids stopping it between classes sharing a Spring context.
-    // Deliberately fails when Docker is unavailable; no disabledWithoutDocker false greens.
-    static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:16-alpine");
-    static { POSTGRES.start(); }
+    // Default: one Testcontainers PostgreSQL per JVM, shared by every test class. Docker being
+    // unavailable is a hard failure, never a skip (no false greens).
+    // Opt-in escape hatch for machines without Docker: set TEST_DB_URL (plus TEST_DB_USER /
+    // TEST_DB_PASSWORD) to run the same suite against an existing, disposable PostgreSQL database.
+    static final String EXTERNAL_URL = System.getenv("TEST_DB_URL");
+    static final PostgreSQLContainer<?> POSTGRES = EXTERNAL_URL == null ? new PostgreSQLContainer<>("postgres:16-alpine") : null;
+    static {
+        if (POSTGRES != null) POSTGRES.start();
+    }
+    static String jdbcUrl() { return POSTGRES != null ? POSTGRES.getJdbcUrl() : EXTERNAL_URL; }
+    static String dbUser() { return POSTGRES != null ? POSTGRES.getUsername() : System.getenv().getOrDefault("TEST_DB_USER", "postgres"); }
+    static String dbPassword() { return POSTGRES != null ? POSTGRES.getPassword() : System.getenv().getOrDefault("TEST_DB_PASSWORD", ""); }
+    static final String SECRET = "test-secret-change-me";
     @DynamicPropertySource
     static void database(DynamicPropertyRegistry registry) {
-        registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
-        registry.add("spring.datasource.username", POSTGRES::getUsername);
-        registry.add("spring.datasource.password", POSTGRES::getPassword);
-        registry.add("app.webhook.secret", () -> "test-secret-change-me");
+        registry.add("spring.datasource.url", PostgresIntegrationTest::jdbcUrl);
+        registry.add("spring.datasource.username", PostgresIntegrationTest::dbUser);
+        registry.add("spring.datasource.password", PostgresIntegrationTest::dbPassword);
+        registry.add("app.webhook.secret", () -> SECRET);
     }
     @Autowired TestRestTemplate http;
     @Autowired ObjectMapper mapper;
@@ -72,8 +82,38 @@ abstract class PostgresIntegrationTest {
         return http.postForEntity("/api/webhooks/payments",
                 new HttpEntity<>(body.getBytes(StandardCharsets.UTF_8), headers), String.class);
     }
+    ResponseEntity<String> reconcile() { return http.postForEntity("/api/admin/reconcile", null, String.class); }
     JsonNode json(ResponseEntity<String> response) throws Exception { return mapper.readTree(response.getBody()); }
     long count(UUID id) { return jdbc.queryForObject("SELECT count(*) FROM ledger_entries WHERE account_id = ?", Long.class, id); }
     long balance(UUID id) { return jdbc.queryForObject("SELECT balance FROM accounts WHERE id = ?", Long.class, id); }
     long claims(String key) { return jdbc.queryForObject("SELECT count(*) FROM processed_webhooks WHERE idempotency_key = ?", Long.class, key); }
+
+    @FunctionalInterface interface Request<T> { T run(int index) throws Exception; }
+    /** Releases {@code count} threads at the same instant and collects every result (or fails on timeout). */
+    <T> List<T> parallel(int count, Request<T> request) throws Exception {
+        ExecutorService pool = Executors.newFixedThreadPool(count);
+        CountDownLatch ready = new CountDownLatch(count); CountDownLatch start = new CountDownLatch(1);
+        List<Future<T>> futures = new ArrayList<>();
+        try {
+            for (int i = 0; i < count; i++) {
+                final int index = i;
+                futures.add(pool.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(10, TimeUnit.SECONDS)) throw new AssertionError("Start barrier timed out");
+                    return request.run(index);
+                }));
+            }
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+            List<T> results = new ArrayList<>();
+            for (var future : futures) {
+                results.add(future.get(Math.max(1, deadline - System.nanoTime()), TimeUnit.NANOSECONDS));
+            }
+            return results;
+        } finally {
+            start.countDown(); pool.shutdownNow();
+            assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
 }

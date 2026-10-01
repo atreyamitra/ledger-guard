@@ -17,6 +17,7 @@ public class Account {
     public long getBalance() { return balance; }
     public void credit(long amount) {
         if (amount <= 0) throw new IllegalArgumentException("Credit must be positive");
-        balance = Math.addExact(balance, amount);
+        try { balance = Math.addExact(balance, amount); }
+        catch (ArithmeticException ex) { throw new BalanceOverflowException("Balance exceeds supported minor-unit range", ex); }
     }
 }

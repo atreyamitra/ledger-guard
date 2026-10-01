@@ -1,5 +1,6 @@
 package com.atreyamitra.ledgerguard.api;
 
+import com.atreyamitra.ledgerguard.domain.BalanceOverflowException;
 import org.springframework.http.*;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -18,8 +19,8 @@ public class ApiErrors {
     ResponseEntity<Map<String, String>> invalid(Exception ex) {
         return ResponseEntity.badRequest().body(Map.of("error", "Invalid request"));
     }
-    @ExceptionHandler(ArithmeticException.class)
-    ResponseEntity<Map<String, String>> overflow(ArithmeticException ex) {
+    @ExceptionHandler(BalanceOverflowException.class)
+    ResponseEntity<Map<String, String>> overflow(BalanceOverflowException ex) {
         return ResponseEntity.badRequest().body(Map.of("error", "Balance exceeds supported minor-unit range"));
     }
 }

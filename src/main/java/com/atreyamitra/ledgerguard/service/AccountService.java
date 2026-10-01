@@ -2,6 +2,7 @@ package com.atreyamitra.ledgerguard.service;
 
 import com.atreyamitra.ledgerguard.api.*;
 import com.atreyamitra.ledgerguard.api.ApiModels.AccountView;
+import com.atreyamitra.ledgerguard.api.ApiModels.EntryView;
 import com.atreyamitra.ledgerguard.domain.*;
 import com.atreyamitra.ledgerguard.repository.*;
 import org.springframework.http.HttpStatus;
@@ -21,9 +22,9 @@ public class AccountService {
     @Transactional(readOnly = true)
     public AccountView get(UUID id) { return AccountView.from(require(id)); }
     @Transactional(readOnly = true)
-    public List<LedgerEntry> entries(UUID id) {
+    public List<EntryView> entries(UUID id) {
         require(id);
-        return entries.findByAccountIdOrderByCreatedAtAscIdAsc(id);
+        return entries.findByAccountIdOrderByCreatedAtAscIdAsc(id).stream().map(EntryView::from).toList();
     }
     private Account require(UUID id) {
         return accounts.findById(id).orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "Account not found"));
