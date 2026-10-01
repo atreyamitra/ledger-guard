@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 import urllib.request
 import uuid
 
@@ -21,8 +22,12 @@ assert status == 201
 account = json.loads(created)
 payload = json.dumps({"accountId": account["id"], "amountMinor": 1000,
                       "currency": "INR", "eventId": "evt_123"}, separators=(",", ":")).encode()
-headers = {"Content-Type": "application/json", "Idempotency-Key": str(uuid.uuid4()),
-           "X-Signature": hmac.new(SECRET, payload, hashlib.sha256).hexdigest()}
+key = str(uuid.uuid4())
+timestamp = str(int(time.time()))
+# Signed bytes: "v1\n" + timestamp + "\n" + idempotency key + "\n" + raw body
+signature = hmac.new(SECRET, b"v1\n" + timestamp.encode() + b"\n" + key.encode() + b"\n" + payload, hashlib.sha256).hexdigest()
+headers = {"Content-Type": "application/json", "Idempotency-Key": key,
+           "X-Timestamp": timestamp, "X-Signature": signature}
 first = request("/api/webhooks/payments", payload, headers)
 second = request("/api/webhooks/payments", payload, headers)
 assert first[0] == second[0] == 200 and first[1] == second[1]

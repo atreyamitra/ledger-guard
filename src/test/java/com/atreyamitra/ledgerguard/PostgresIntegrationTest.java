@@ -68,19 +68,30 @@ abstract class PostgresIntegrationTest {
                 + ",\"currency\":\"INR\",\"eventId\":\"evt_123\"}";
     }
     String key() { return UUID.randomUUID().toString(); }
-    // Independent signer: does not invoke the production crypto utility.
-    String sign(String body) throws Exception {
+    static String now() { return Long.toString(java.time.Instant.now().getEpochSecond()); }
+    // Independent signer: does not invoke the production crypto utility. Signs "v1\n" + ts + "\n" + key + "\n" + body.
+    String sign(String timestamp, String key, String body) throws Exception {
         Mac mac = Mac.getInstance("HmacSHA256");
-        mac.init(new SecretKeySpec("test-secret-change-me".getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        mac.init(new SecretKeySpec(SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+        mac.update(("v1\n" + timestamp + "\n" + key + "\n").getBytes(StandardCharsets.UTF_8));
         return HexFormat.of().formatHex(mac.doFinal(body.getBytes(StandardCharsets.UTF_8)));
     }
-    ResponseEntity<String> send(String body, String key) throws Exception { return send(body, key, sign(body)); }
-    ResponseEntity<String> send(String body, String key, String signature) {
+    /** A correctly signed request with a fresh timestamp. */
+    ResponseEntity<String> send(String body, String key) throws Exception {
+        String ts = now();
+        return sendSigned(body, key, ts, sign(ts, key == null ? "" : key, body));
+    }
+    /** Full control over every header; a null header is omitted. */
+    ResponseEntity<String> sendSigned(String body, String key, String timestamp, String signature) {
+        return http.postForEntity("/api/webhooks/payments",
+                new HttpEntity<>(body.getBytes(StandardCharsets.UTF_8), headers(key, timestamp, signature)), String.class);
+    }
+    static HttpHeaders headers(String key, String timestamp, String signature) {
         HttpHeaders headers = new HttpHeaders(); headers.setContentType(MediaType.APPLICATION_JSON);
         if (key != null) headers.set("Idempotency-Key", key);
+        if (timestamp != null) headers.set("X-Timestamp", timestamp);
         if (signature != null) headers.set("X-Signature", signature);
-        return http.postForEntity("/api/webhooks/payments",
-                new HttpEntity<>(body.getBytes(StandardCharsets.UTF_8), headers), String.class);
+        return headers;
     }
     ResponseEntity<String> reconcile() { return http.postForEntity("/api/admin/reconcile", null, String.class); }
     JsonNode json(ResponseEntity<String> response) throws Exception { return mapper.readTree(response.getBody()); }

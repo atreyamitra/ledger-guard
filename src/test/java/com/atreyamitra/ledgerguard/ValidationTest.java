@@ -61,6 +61,8 @@ class ValidationTest extends PostgresIntegrationTest {
         assertThat(send(body(id, 1000), longest).getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(send(body(id, 1000), "k".repeat(201)).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(send(body(id, 1000), "   ").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(send(body(id, 1000), "has space").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(send(body(id, 1000), "caf\u00e9").getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(count(id)).isEqualTo(1);
     }
     @Test void overlongEventIdIsRejected() throws Exception {
@@ -69,7 +71,7 @@ class ValidationTest extends PostgresIntegrationTest {
         assertThat(count(id)).isZero();
     }
     @Test void emptyBodyIs401WhenUnsignedAndStill400WhenValidlySigned() throws Exception {
-        assertThat(send("", key(), null).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(sendSigned("", key(), now(), null).getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(send("", key()).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
     @Test void accountCreationRejectsBlankAndOverlongNames() {

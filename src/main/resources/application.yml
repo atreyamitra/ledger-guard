@@ -24,3 +24,5 @@ app:
   webhook:
     # No default on purpose: the app refuses to start without a secret of >= 16 characters.
     secret: ${WEBHOOK_SECRET:}
+    # Requests whose X-Timestamp differs from server time by more than this (either direction) are refused.
+    timestamp-tolerance-seconds: ${WEBHOOK_TOLERANCE_SECONDS:300}

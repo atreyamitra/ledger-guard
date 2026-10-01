@@ -10,16 +10,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ConcurrencyTest extends PostgresIntegrationTest {
     @Test @Timeout(90)
     void twentyParallelIdenticalWebhooksCreditExactlyOnce() throws Exception {
-        var id = createAccount(); String key = key(); String body = body(id, 1000); String signature = sign(body);
-        var responses = parallel(20, index -> send(body, key, signature));
+        var id = createAccount(); String key = key(); String body = body(id, 1000);
+        String ts = now(); String signature = sign(ts, key, body); // one byte-identical signed request, sent 20 times
+        var responses = parallel(20, index -> sendSigned(body, key, ts, signature));
         assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK));
         assertThat(responses.stream().map(ResponseEntity::getBody).distinct().count()).isEqualTo(1);
         assertThat(count(id)).isEqualTo(1); assertThat(balance(id)).isEqualTo(1000); assertThat(claims(key)).isEqualTo(1);
     }
     @Test @Timeout(90)
     void differentKeysOnSameAccountDoNotLoseCredits() throws Exception {
-        var id = createAccount(); String body = body(id, 1000); String signature = sign(body);
-        var responses = parallel(20, index -> send(body, key(), signature));
+        var id = createAccount(); String body = body(id, 1000);
+        var responses = parallel(20, index -> send(body, key()));
         assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK));
         assertThat(count(id)).isEqualTo(20); assertThat(balance(id)).isEqualTo(20000);
     }
@@ -36,10 +37,10 @@ class ConcurrencyTest extends PostgresIntegrationTest {
     }
     @Test @Timeout(90)
     void tenKeysWithFiveDuplicatesEachCreditExactlyTenTimes() throws Exception {
-        var id = createAccount(); String body = body(id, 100); String signature = sign(body);
+        var id = createAccount(); String body = body(id, 100);
         List<String> keys = new ArrayList<>();
         for (int i = 0; i < 10; i++) keys.add(key());
-        var responses = parallel(50, index -> send(body, keys.get(index % 10), signature));
+        var responses = parallel(50, index -> send(body, keys.get(index % 10)));
         assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.OK));
         assertThat(count(id)).isEqualTo(10); assertThat(balance(id)).isEqualTo(1000);
         assertThat(responses.stream().map(ResponseEntity::getBody).distinct().count()).isEqualTo(10);
@@ -47,8 +48,8 @@ class ConcurrencyTest extends PostgresIntegrationTest {
     }
     @Test @Timeout(90)
     void concurrentDuplicatesForUnknownAccountAllGet404AndLeaveNoClaim() throws Exception {
-        String key = key(); String body = body(UUID.randomUUID(), 1000); String signature = sign(body);
-        var responses = parallel(20, index -> send(body, key, signature));
+        String key = key(); String body = body(UUID.randomUUID(), 1000);
+        var responses = parallel(20, index -> send(body, key));
         assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND));
         assertThat(claims(key)).isZero();
     }
@@ -56,8 +57,8 @@ class ConcurrencyTest extends PostgresIntegrationTest {
     void concurrentOverflowRollsBackEveryAttempt() throws Exception {
         var id = createAccount();
         assertThat(send(body(id, Long.MAX_VALUE), key()).getStatusCode()).isEqualTo(HttpStatus.OK);
-        String key = key(); String body = body(id, 1); String signature = sign(body);
-        var responses = parallel(20, index -> send(body, key, signature));
+        String key = key(); String body = body(id, 1);
+        var responses = parallel(20, index -> send(body, key));
         assertThat(responses).allSatisfy(r -> assertThat(r.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST));
         assertThat(claims(key)).isZero(); assertThat(count(id)).isEqualTo(1); assertThat(balance(id)).isEqualTo(Long.MAX_VALUE);
     }

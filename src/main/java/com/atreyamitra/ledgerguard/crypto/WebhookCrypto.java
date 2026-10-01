@@ -8,6 +8,19 @@ import java.util.HexFormat;
 
 public final class WebhookCrypto {
     private WebhookCrypto() { }
+    /**
+     * Bytes covered by the MAC: {@code "v1\n" + timestamp + "\n" + idempotencyKey + "\n" + body}.
+     * Unambiguous only because callers guarantee the timestamp is canonical decimal digits and the key
+     * is printable ASCII (0x21-0x7E): neither can contain '\n', so the first two newlines after "v1"
+     * always delimit them and the remainder is the body. See {@code WebhookAuthenticator}.
+     */
+    public static byte[] signingInput(String timestamp, String idempotencyKey, byte[] body) {
+        byte[] head = ("v1\n" + timestamp + "\n" + idempotencyKey + "\n").getBytes(StandardCharsets.US_ASCII);
+        byte[] message = new byte[head.length + body.length];
+        System.arraycopy(head, 0, message, 0, head.length);
+        System.arraycopy(body, 0, message, head.length, body.length);
+        return message;
+    }
     public static byte[] hmac(byte[] body, String secret) {
         try {
             Mac mac = Mac.getInstance("HmacSHA256");
