@@ -8,7 +8,7 @@ import urllib.request
 import uuid
 
 BASE = "http://127.0.0.1:8080"
-SECRET = os.environ.get("WEBHOOK_SECRET", "test-secret-change-me").encode()
+SECRET = os.environ["WEBHOOK_SECRET"].encode()  # must equal the secret the server was started with
 
 def request(path, body=None, headers=None):
     req = urllib.request.Request(BASE + path, data=body, headers=headers or {},
