@@ -18,7 +18,13 @@ Each answer is something the code or a test actually shows. Pointers in brackets
 
 **Why HMAC?** Anyone who can reach the URL could otherwise POST credits. A shared-secret MAC proves the sender knows the secret and the body was not altered.
 
-**What exactly does the HMAC authenticate?** The raw request body bytes — nothing else. Not the `Idempotency-Key`, not headers, not time. So a captured valid request can be replayed with a **new** key and would credit again. That is a documented limitation; the fix is to sign a timestamp + key (reject stale), or dedupe on a provider event id. Also: I verify before parsing because re-serialised JSON would not match the signed bytes, and compare with `MessageDigest.isEqual` (constant time).
+**What exactly does the HMAC authenticate?** `"v1\n" + timestamp + "\n" + idempotencyKey + "\n" + rawBody` — so the sender, the exact payload bytes, the idempotency key and the moment. Not other headers. My first version signed only the body, which allowed a captured request to be re-sent under a *new* key for a second credit; binding the key and a timestamp closed that, and a test (`capturedBodyWithNewKeyAndOldSignatureIsRejected`) demonstrates it. I verify before parsing because re-serialised JSON would not match the signed bytes, and compare with `MessageDigest.isEqual` (constant time).
+
+**Is that concatenation safe?** Only because both preceding fields are validated first: the timestamp is canonical digits and the key is printable ASCII, so neither can contain `\n`. Splitting at the first two newlines is then unique, so different (timestamp, key, body) triples can't collide. If I allowed arbitrary keys I would length-prefix instead.
+
+**What does the timestamp window buy you, and cost?** It bounds how long a captured request is useful (300 s default) and makes the stale-request case a 401. Cost: sender and receiver clocks must roughly agree. Inside the window an identical resend is harmless because idempotency returns the stored response. A retry with a fresh timestamp and the same key/body also replays safely. Why not a nonce store? Persistent idempotency already de-duplicates identical keys; a nonce table would add state for no extra protection here.
+
+**Is the 16-character secret check meaningful?** No — it only catches empty or placeholder values. Strength comes from using 32+ random bytes (`openssl rand -hex 32`); the code cannot verify entropy, and the docs say so.
 
 **Why is body whitespace significant?** The idempotency fingerprint is SHA-256 of raw bytes. Treating "equivalent" JSON as equal needs canonicalisation rules I'd rather not guess; being strict gives a safe `409`.
 
@@ -34,4 +40,4 @@ Each answer is something the code or a test actually shows. Pointers in brackets
 
 **Why an append-only trigger?** Defence in depth: even a future code path using raw SQL can't edit history. A superuser can still disable it.
 
-**How would this become production-grade?** Sign timestamp + key and enforce a replay window; authenticate/authorise admin and read endpoints; TLS and secret management/rotation; request-size limits and rate limiting; idempotency-record TTL and cleanup; pagination; double-entry model with debits; metrics, structured logging and alerts on reconciliation drift; run reconciliation on a schedule against a replica; load testing; handling provider-specific event ids.
+**How would this become production-grade?** Secret rotation (accept two secrets); authenticate/authorise admin and read endpoints; TLS and secret management/rotation; request-size limits and rate limiting; idempotency-record TTL and cleanup; pagination; double-entry model with debits; metrics, structured logging and alerts on reconciliation drift; run reconciliation on a schedule against a replica; load testing; handling provider-specific event ids.
