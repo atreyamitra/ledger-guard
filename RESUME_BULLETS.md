@@ -1,16 +1,16 @@
 # Resume / LinkedIn evidence
 
-Every line is backed by code and tests in this repo; see `VERIFICATION.md` for what was run. No performance, scale or production-use claims are made.
+Every line is backed by code and tests in this repo. Verified: 63 tests, 0 failures, on GitHub Actions ([run 10](https://github.com/atreyamitra/ledger-guard/actions/runs/36801224506)); see `VERIFICATION.md`. No performance, scale or production-use claims are made.
 
 **One-line description**
-Java/Spring Boot + PostgreSQL service that applies HMAC-signed payment webhooks exactly once, verified by Testcontainers concurrency tests.
+Java/Spring Boot + PostgreSQL service that applies replay-protected, HMAC-signed payment webhooks at most once per idempotency key, verified by Testcontainers concurrency tests.
 
 **Resume bullets**
-- Implemented a persistent idempotency layer in Spring Boot/PostgreSQL (unique-key claim row, pessimistic account lock, single transaction) so 20–50 concurrent duplicate webhooks credit exactly once; verified with integration tests over real HTTP, including two app instances sharing one database.
-- Verified HMAC-SHA256 signatures over raw request bytes before parsing, with constant-time comparison and strict JSON validation; wrote tests for tampered, truncated, malformed and missing signatures and for conflicting bodies on a reused idempotency key (409).
-- Designed Flyway-managed schema constraints (CHECKs, FK, unique claim-to-entry link, append-only trigger) plus a single-snapshot reconciliation query; wrote 45 JUnit/Testcontainers tests, confirmed by mutation that removing the row lock or duplicate recovery fails them, and run them in GitHub Actions CI.
+- Implemented persistent idempotency in Spring Boot/PostgreSQL (primary-key claim row, pessimistic account lock, single transaction) so 20–50 concurrent duplicate webhooks, including requests split across two app instances, credit exactly once; verified by integration tests on real PostgreSQL.
+- Closed a webhook replay gap by extending HMAC-SHA256 to cover timestamp + Idempotency-Key + raw body with a configurable freshness window and constant-time comparison; added tests for changed key/body/timestamp, stale, future and malformed timestamps, and an independently computed known-answer vector.
+- Designed Flyway-managed schema constraints (CHECKs, FK, unique claim-to-entry link, append-only trigger) and a single-snapshot reconciliation query; wrote 63 JUnit/Testcontainers tests, confirmed by mutation that removing the row lock, duplicate recovery or freshness check fails them, and run them in GitHub Actions.
 
 **LinkedIn project bullets**
-- Exactly-once webhook processing: a PostgreSQL primary-key claim arbitrates duplicates across threads and app instances; duplicate losers roll back and replay the stored response.
-- Transaction design: claim, account lock, ledger insert, balance update and stored response commit atomically; failures (unknown account, overflow) roll back and leave the key reusable.
-- Testing: 45 tests on real PostgreSQL via Testcontainers, covering concurrent duplicates, conflicting payloads, rollback, DB constraints and reconciliation under concurrent writes.
+- Request authentication: HMAC-SHA256 over an unambiguous `v1 | timestamp | idempotency key | raw body` encoding, plus a freshness window, so a captured request cannot be re-sent under a different key or later.
+- Idempotent, transactional crediting: a PostgreSQL primary-key claim arbitrates duplicates across threads and instances; claim, lock, ledger insert, balance and stored response commit atomically, and failures roll back and leave the key reusable.
+- Testing: 63 tests on real PostgreSQL via Testcontainers covering concurrent duplicates, conflicting payloads, rollback, replay attempts, DB constraints and reconciliation under concurrent writes.

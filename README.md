@@ -80,7 +80,7 @@ Missing Docker is a **failure, not a skip**. Without Docker you may point the id
 TEST_DB_URL=jdbc:postgresql://127.0.0.1:5432/ledger_test TEST_DB_USER=postgres ./mvnw -B test
 ```
 
-Independent test signer (does not call production crypto); unique accounts/keys per test; parallel tests release all threads from a start barrier. See [VERIFICATION.md](VERIFICATION.md) for exactly what was run and what the concurrency tests do and do not prove.
+Independent test signer (does not call production crypto); unique accounts/keys per test; parallel tests release all threads from a start barrier. Last verified: 63 tests green on GitHub Actions ([run 10](https://github.com/atreyamitra/ledger-guard/actions/runs/36801224506)). See [VERIFICATION.md](VERIFICATION.md) for exactly what was run and what the concurrency tests do and do not prove.
 
 ## Quick start
 
