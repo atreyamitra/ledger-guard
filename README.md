@@ -1,133 +1,126 @@
 # ledger-guard
 
-A small Java 17 payment credit ledger with authenticated webhooks, persistent idempotency, atomic balance updates, and reconciliation. A portfolio engineering project with fictional data; no financial institution affiliation.
+A Spring Boot / PostgreSQL service that applies signed payment webhooks to account balances **exactly once**, even when the same webhook is delivered concurrently, to different app instances, or retried after a failure.
 
-**Verification status:** the full Maven build and PostgreSQL/Testcontainers integration suite have run in GitHub Actions and passed: 23 tests, 0 failures, 0 errors ([workflow run](https://github.com/atreyamitra/ledger-guard/actions/runs/34613101102/job/103308234354)). See [VERIFICATION.md](VERIFICATION.md) for the full history, including the earlier offline-only checks and the CI fixes that got the suite green.
+[![Java CI](https://github.com/atreyamitra/ledger-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/atreyamitra/ledger-guard/actions/workflows/ci.yml)
 
-## Clone and run
+A portfolio project with fictional data. It is a study of correctness under concurrency, **not** a production payment platform (see [Limitations](#limitations)).
 
-```sh
-git clone https://github.com/atreyamitra/ledger-guard.git
-cd ledger-guard
-./mvnw -B test
+## Why it is technically interesting
+
+Payment providers retry webhooks, and retries race with the original. Getting "credit once" right needs more than an `if (!seen)` check. This project:
+
+- **Persists idempotency in PostgreSQL** (a `PRIMARY KEY` claim row), so duplicates are arbitrated by the database across threads and across instances.
+- **Authenticates the exact bytes** with HMAC-SHA256 *before* parsing, using a constant-time comparison.
+- **Keeps claim + balance + ledger entry + stored response in one transaction**, so any failure un-claims the key.
+- **Uses a pessimistic row lock** so different keys hitting one account cannot lose updates, and shows by mutation that the test suite notices when it is removed.
+- **Pushes invariants into the schema**: CHECKs, FKs, a UNIQUE claim↔entry link, and an append-only trigger.
+- **Reconciles** every balance against its ledger in a single MVCC snapshot.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    W[Webhook] --> H{HMAC<br/>raw bytes} --> I{Idempotency<br/>pre-check} --> TX
+    subgraph TX [one transaction]
+        direction LR
+        C[claim INSERT<br/>PK arbitrates] --> L[lock account<br/>FOR UPDATE] --> E[ledger INSERT] --> B[balance update] --> S[store response]
+    end
+    TX --> R[200 + stored response]
 ```
 
-CI runs the same command on a GitHub-hosted `ubuntu-latest` runner (Java 17, Docker available) via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). `src/test/java/com/atreyamitra/ledgerguard/ConcurrencyTest.java` proves the 20-concurrent-duplicate guarantee: `twentyParallelIdenticalWebhooksCreditExactlyOnce` fires 20 parallel identical signed webhooks and asserts all 200 responses are byte-identical, with exactly one ledger entry, one idempotency claim, and the balance increased exactly once.
+Duplicate requests that lose the race get a unique violation, roll back, and replay the winner's stored response. Full diagrams, the duplicate-recovery walkthrough and the data model are in **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
-## Why this design
+## Core guarantees (each backed by a test)
 
-Payment delivery can be retried and concurrent. A unique database idempotency key makes a committed response replayable without a second credit. SHA-256 fingerprints bind keys to exact body bytes; JSON whitespace changes count as a different body. HMAC-SHA256 authenticates the raw body before parsing, with `MessageDigest.isEqual` for the MAC comparison. Reconciliation independently compares every stored balance with its ledger sum in a single database snapshot.
-
-## Architecture (8 lines)
-
-1. Controllers expose accounts, webhook ingestion, and reconciliation over HTTP.
-2. The webhook controller verifies HMAC over raw bytes before parsing or validation.
-3. `WebhookService` hashes the bytes and returns an existing stored response when possible.
-4. `PaymentWriter` inserts and flushes an idempotency claim inside a Spring transaction.
-5. PostgreSQL's unique key arbitrates competing claims across application instances.
-6. A pessimistic account lock serializes balance changes for different payment keys.
-7. Claim, credit entry, resulting balance, and serialized response commit together; failed writes roll back together.
-8. Duplicate recovery happens after rollback; reconciliation uses one SQL aggregate snapshot.
-
-## Prerequisites
-
-- JDK 17 (`java -version`).
-- A running Docker daemon for Testcontainers and permission to pull `postgres:16-alpine`.
-- Network access to Maven Central on the first build, and Docker Hub for the test image.
-- Linux/macOS launcher: `curl`, `unzip`, `sha512sum` (on macOS, install GNU coreutils and expose `sha512sum`). Windows: PowerShell and `mvnw.cmd`.
-- PostgreSQL 16 for running the app (tests provision their own container).
-
-The checked-in `mvnw` / `mvnw.cmd` are lightweight distribution launchers for Maven 3.9.9, not generated Apache Wrapper scripts. They download Maven from the configured HTTPS URL and verify its published SHA-512 checksum. Maven itself need not be installed. The checksum comes from the same origin as the distribution; it is an integrity check, not an independently pinned supply-chain attestation. Dependency versions come from Spring Boot 3.3.13's BOM.
-
-## Run
-
-Start a local development database (or provide an existing PostgreSQL instance):
-
-```sh
-docker run --name ledger-guard-postgres --rm \
-  -e POSTGRES_DB=ledger_guard -e POSTGRES_USER=ledger_guard -e POSTGRES_PASSWORD=ledger_guard \
-  -p 127.0.0.1:5432:5432 -d postgres:16-alpine
-./mvnw spring-boot:run
-```
-
-The default database credentials and webhook secret are local development examples. The app listens on `127.0.0.1:8080`. Flyway creates the schema; Hibernate only validates it. Configure `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `WEBHOOK_SECRET`, and optionally `SERVER_ADDRESS` via environment variables. Windows: use `mvnw.cmd spring-boot:run`.
-
-Example using Python 3's standard library (no additional packages):
-
-```sh
-python3 scripts/demo.py
-```
-
-It creates an account, sends the exact same signed payment twice, checks the responses match, fetches entries, and reconciles. Start the application before running it. The script reads `WEBHOOK_SECRET` when overridden.
-
-## Test
-
-```sh
-./mvnw test
-```
-
-CI runs `./mvnw -B test` on a GitHub-hosted Ubuntu runner with Java 17 and Docker, and is currently green (23/23 tests passing). No external database configuration is needed for tests. Testcontainers starts one PostgreSQL container per test JVM and applies the real Flyway migration. Tests use real HTTP requests (Apache HttpClient5, configured in `PostgresIntegrationTest` — the JDK's default `HttpURLConnection`-based client throws on a POST that receives a 401 response) and independent signature generation. Missing Docker is a failure, not a skip. Classes run sequentially; concurrency is explicitly driven inside `ConcurrencyTest`. Unique accounts and keys isolate scenarios. Test-only drift is restored in a `finally` block.
-
-| Test | Contract checked |
+| Guarantee | Test |
 | --- | --- |
-| `WebhookHmacTest` | Bad/missing/malformed signatures return 401; a valid request creates one entry; raw-byte tampering and unauthenticated retries are rejected |
-| `IdempotencyTest` | Same key/body returns the exact original response; changed body returns 409; historical result survives later credits |
-| `ConcurrencyTest.twentyParallelIdenticalWebhooksCreditExactlyOnce` | **20 parallel identical signed webhooks**, all 200 with identical responses, one entry, one claim, balance increased once — this is the class/method that proves the 20-concurrent-duplicate guarantee |
-| Other `ConcurrencyTest` cases | Different keys do not lose credits; competing bodies under one key yield one accepted body |
-| `ReconciliationTest` | Healthy balances, test-only drift returning 409, SQL update/delete protection |
-| `ValidationTest` | Nonpositive amounts, unknown accounts, malformed input, unsupported currency, fractions, missing key, and overflow rollback |
-| `WebhookCryptoUnitTest` | Fixed known-answer HMAC-SHA256 and SHA-256 vectors |
+| 20 identical concurrent webhooks → one credit, 20 identical `200` bodies | `ConcurrencyTest.twentyParallelIdenticalWebhooksCreditExactlyOnce` |
+| 30 duplicates split across **two application instances** sharing one DB → one credit | `MultiInstanceTest` |
+| 50 requests = 10 keys × 5 duplicates → exactly 10 credits | `ConcurrencyTest.tenKeysWithFiveDuplicatesEachCreditExactlyTenTimes` |
+| 20 different keys on one account → no lost credits (needs the row lock) | `ConcurrencyTest.differentKeysOnSameAccountDoNotLoseCredits` |
+| Same key, different bodies, concurrently → one winner, rest `409` | `ConcurrencyTest.competingBodiesWithSameKeyHaveOneWinner` |
+| Failure under concurrency (unknown account, overflow) leaves **no claim**, so retries still work | `ConcurrencyTest` failure-path tests, `ValidationTest` |
+| The unique claim, not the app pre-check, is what stops a duplicate | `DatabaseConstraintsTest.uniqueClaimIsTheArbiter...` |
+| Reconciliation never reports false drift while credits are in flight | `ConcurrencyTest.reconciliationNeverSeesDriftWhile...` |
+| Bad / missing / truncated / non-hex / whitespace-tampered signatures → `401`, nothing written | `WebhookHmacTest`, `WebhookCryptoUnitTest` |
+| Ledger rows cannot be updated, deleted or truncated; bad rows rejected by CHECK/FK | `ReconciliationTest`, `DatabaseConstraintsTest` |
 
-With dependencies cached, `./mvnw -Dtest=WebhookCryptoUnitTest test` runs the cryptographic unit tests without Docker. With only JDK 17, `./scripts/check-offline.sh` runs the dependency-free crypto checks. **Neither replaces the HTTP/PostgreSQL suite.**
+## Tech stack
 
-## HTTP contract
+Java 17 · Spring Boot 3.3 (Web, Validation, Data JPA) · PostgreSQL 16 · Flyway · JUnit 5 · AssertJ · Testcontainers · Apache HttpClient 5 (tests) · Maven · GitHub Actions.
 
-| Request | Success | Error |
-| --- | --- | --- |
-| `POST /api/accounts` with `{"ownerName":"Asha"}` | 201 `{id,ownerName,balance}` plus Location | 400 invalid name |
-| `GET /api/accounts/{id}` | 200 `{id,ownerName,balance}` | 404 unknown account |
-| `GET /api/accounts/{id}/entries` | 200 ordered ledger lines | 404 unknown account |
-| `POST /api/webhooks/payments` | 200 stored payment result | 401 invalid HMAC; 400 invalid fields/key or overflow; 404 unknown account; 409 reused key with changed body |
-| `POST /api/admin/reconcile` | 200 `{"ok":true}` | 409 `{"ok":false,"drifts":[{"accountId":"...","balance":1007,"ledgerTotal":1000}]}` |
+## Important engineering decisions
 
-Webhook headers: `X-Signature` is 64 hexadecimal characters (HMAC-SHA256 of the exact body bytes); `Idempotency-Key` is a nonblank string up to 200 characters. Authenticate every attempt, including replays.
+- **DB-backed idempotency, not an in-memory set or cache.** Memory is per-instance and lost on restart; the database is the one component every instance already shares.
+- **Claim first, lock second.** The claim insert is flushed before the account lock, so a duplicate blocks on the index rather than on the account, and an unknown account rolls the claim back.
+- **`WebhookService` is deliberately non-transactional**, so duplicate recovery (re-reading the winner) happens *after* the losing transaction has rolled back.
+- **The body hash is over raw bytes.** `{"a":1}` and `{"a": 1}` are different bodies; reuse of a key with either is a `409`. Strictness beats guessing equivalence.
+- **Strict JSON.** Unknown fields, duplicate keys, trailing tokens, fractional amounts and string-typed numbers are all rejected.
+- **No default secret.** The app refuses to start without `WEBHOOK_SECRET` (≥ 16 chars).
+- **Money is `long` minor units (paise), never floating point**; overflow is a domain exception that rolls everything back.
 
-```json
-{"accountId":"<uuid>","amountMinor":1000,"currency":"INR","eventId":"evt_123"}
+## Testing
+
+45 tests: unit (crypto, domain), and integration tests that go over real HTTP into a real PostgreSQL, applying the real Flyway migrations. No mocks of the database or the service layer.
+
+```sh
+./mvnw -B verify      # needs Docker: Testcontainers starts postgres:16-alpine
 ```
 
-Success fields: `entryId`, `accountId`, `amountMinor`, `currency`, `eventId`, `balance`. `balance` on a replay is the **original resulting balance**, not the current account balance. Amounts and balances are Java `long` paise, never floating point. Reconciliation uses PostgreSQL numeric sums so even a corrupted total does not wrap a long.
+Missing Docker is a **failure, not a skip**. Without Docker you may point the identical suite at a disposable PostgreSQL:
 
-## Scope and boundaries
+```sh
+TEST_DB_URL=jdbc:postgresql://127.0.0.1:5432/ledger_test TEST_DB_USER=postgres ./mvnw -B test
+```
 
-- Credit-only, INR-only ledger; not double-entry accounting, settlement, or a production payment system.
-- `eventId` is descriptive metadata. Deduplication is **only by Idempotency-Key**; a different key can credit the same event again. The HMAC signs the body, not the key. No timestamp/replay-window scheme is implemented.
-- Account creation/reads and reconciliation have no user/admin authorization, matching this small exercise. Keep the default loopback binding; real deployment needs authentication, authorization, TLS, secret management, and ingress limits.
-- The ledger has no update/delete repository API. Hibernate marks entries immutable and PostgreSQL rejects UPDATE, DELETE, and TRUNCATE. A privileged database administrator can still alter protections.
-- Idempotency response is nullable only while an uncommitted claim is being filled. Application success commits it with the entry and balance; other transactions cannot observe the intermediate record. Out-of-band database writes are outside this guarantee.
-- No idempotency expiration, pagination, debit flow, exchange conversion, or OpenAPI dependency. The small API is documented above.
+Independent test signer (does not call production crypto); unique accounts/keys per test; parallel tests release all threads from a start barrier. See [VERIFICATION.md](VERIFICATION.md) for exactly what was run and what the concurrency tests do and do not prove.
 
-## What reviewers should open first / file map
+## Quick start
+
+```sh
+docker run --rm -d --name lg-pg -e POSTGRES_DB=ledger_guard -e POSTGRES_USER=ledger_guard \
+  -e POSTGRES_PASSWORD=ledger_guard -p 127.0.0.1:5432:5432 postgres:16-alpine
+export WEBHOOK_SECRET='change-me-to-something-long'
+./mvnw spring-boot:run          # listens on 127.0.0.1:8080; Flyway creates the schema
+python3 scripts/demo.py         # in another shell: signs a payment, sends it twice, reconciles
+```
+
+Config: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `WEBHOOK_SECRET` (required), `SERVER_ADDRESS`.
+
+## API
+
+| Request | Success | Errors |
+| --- | --- | --- |
+| `POST /api/accounts` `{"ownerName":"Asha"}` | `201` `{id, ownerName, balance}` | `400` |
+| `GET /api/accounts/{id}` | `200` | `400` bad id, `404` |
+| `GET /api/accounts/{id}/entries` | `200` ordered entries | `404` |
+| `POST /api/webhooks/payments` | `200` stored result | `401` bad signature · `400` invalid key/body/overflow · `404` unknown account · `409` key reused with a different body |
+| `POST /api/admin/reconcile` | `200 {"ok":true}` | `409 {"ok":false,"drifts":[...]}` |
+
+Webhook headers: `X-Signature` = hex HMAC-SHA256 of the exact body bytes; `Idempotency-Key` = 1–200 characters. Body: `{"accountId":"<uuid>","amountMinor":1000,"currency":"INR","eventId":"evt_123"}`. A replay returns the **original** response, including the balance at that time.
+
+## Limitations
+
+- Credit-only, INR-only, single-entry ledger: not double-entry accounting, settlement, or a production system.
+- The **HMAC covers the body, not the `Idempotency-Key`, and there is no timestamp/replay window.** Someone who captures a valid signed body can resend it with a *new* key and be credited again. `eventId` is metadata, not a dedup key. A real design would sign a timestamp and key, or dedupe on a provider event id.
+- Account, entries and reconcile endpoints have **no authentication**; the server binds to loopback by default. No TLS, rate limiting or request-size limit.
+- Idempotency records never expire; entries and reconciliation are unpaginated full scans.
+- Concurrency tests run in one JVM (plus a second in-process app context) against one PostgreSQL node, at `READ COMMITTED`. They do not cover multi-node databases, failover, or crashes mid-commit.
+
+## Repository map
 
 ```text
-src/main/java/com/atreyamitra/ledgerguard/
-  api/                      HTTP endpoints, DTO validation, error responses
-  crypto/WebhookCrypto.java Raw-body HMAC and SHA-256
-  domain/                   Account, immutable ledger entry, processed webhook
-  repository/               Account locks, insert-only claims, read repositories
-  service/PaymentWriter.java Atomic claim + credit + entry + response transaction
-  service/WebhookService.java Replay/conflict handling outside failed transactions
-  service/ReconciliationService.java Single-snapshot drift query
-src/main/resources/db/migration/V1__create_ledger.sql
-src/test/java/com/atreyamitra/ledgerguard/ConcurrencyTest.java
-src/test/java/com/atreyamitra/ledgerguard/   Remaining integration + unit tests
-.github/workflows/ci.yml     Java 17 / Maven test pipeline
-scripts/demo.py             Signed request and replay walkthrough
-scripts/check-offline.sh    JDK-only crypto checks
-HANDOFF.md                  Current state, exact next command, complete file tree
-STATUS.md / TODO.md         Checkpoint status and outstanding work
-VERIFICATION.md             Observed checks versus unexecuted tests, and the CI run history
-RESUME_BULLETS.md            Claims limited to observed passing checks
+src/main/java/.../api/           controllers, DTOs, error mapping
+src/main/java/.../crypto/        HMAC + body hash
+src/main/java/.../service/       WebhookService (replay/recovery), PaymentWriter (the transaction), ReconciliationService
+src/main/java/.../domain/        Account, LedgerEntry (immutable), ProcessedWebhook
+src/main/resources/db/migration/ V1 schema + append-only trigger, V2 claim↔entry link
+src/test/java/.../               ConcurrencyTest, MultiInstanceTest, DatabaseConstraintsTest, ... (start here)
+docs/ARCHITECTURE.md             diagrams, duplicate recovery, data model
+INTERVIEW_NOTES.md               Q&A on the design
+VERIFICATION.md                  what was run, results, what the tests do not prove
+.github/workflows/ci.yml         Java 17 + Docker, ./mvnw verify
 ```
 
-Start with `PaymentWriter`, `WebhookService`, the migration, and `ConcurrencyTest` to review the core guarantees and how they are tested.
+Read first: `PaymentWriter`, `WebhookService`, `V1`/`V2` migrations, `ConcurrencyTest`.
